@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Debate Arena</title>
+<link rel="stylesheet" href="style.css" />
+<!-- /__bridge.js exposes window.copilot. Must load before main.js. -->
+<script src="/__bridge.js"></script>
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">⚔️</span>
+        <div class="brand-text">
+          <h1>Debate Arena</h1>
+          <p class="tagline">Two local models enter. One leaves victorious.</p>
+        </div>
+      </div>
+      <div id="statusPill" class="status idle">
+        <span class="status-dot"></span><span class="status-text">Idle</span>
+      </div>
+    </header>
+
+    <section id="setup" class="setup">
+      <div class="field topic-field">
+        <label for="topic">Resolution</label>
+        <textarea id="topic" rows="2"
+          placeholder="e.g. Remote work is better for software teams than working in an office."></textarea>
+      </div>
+
+      <div class="config-grid">
+        <div class="field">
+          <label for="proModel"><span class="dot pro"></span> Pro debater
+            <span class="win-pill" id="proWin" hidden>🏆 Winner</span></label>
+          <select id="proModel"><option>Loading…</option></select>
+        </div>
+        <div class="field">
+          <label for="conModel"><span class="dot con"></span> Con debater
+            <span class="win-pill" id="conWin" hidden>🏆 Winner</span></label>
+          <select id="conModel"><option>Loading…</option></select>
+        </div>
+        <div class="field">
+          <label for="judgeModel"><span class="dot judge"></span> Judge
+            <span class="win-pill draw" id="drawWin" hidden>🤝 Draw</span></label>
+          <select id="judgeModel"><option>Loading…</option></select>
+        </div>
+        <div class="field rounds-field">
+          <label for="rounds">Rebuttal rounds</label>
+          <select id="rounds">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="startBtn" class="btn primary">Start Debate</button>
+        <button id="stopBtn" class="btn danger" hidden>Stop</button>
+        <button id="refreshBtn" class="btn ghost" title="Reload model list from Ollama">↻ Models</button>
+        <span id="setupMsg" class="setup-msg"></span>
+      </div>
+    </section>
+
+    <main id="stage" class="stage">
+      <div id="empty" class="empty">
+        <div class="empty-icon">🎙️</div>
+        <p>Choose your debaters, set a resolution, and start the match.</p>
+        <p class="empty-sub">Powered locally by Ollama — nothing leaves your machine.</p>
+      </div>
+    </main>
+
+    <footer id="saveBar" class="savebar" hidden>
+      <div class="save-field">
+        <span class="save-prefix">debates/</span>
+        <input id="filename" class="filename" type="text" spellcheck="false" />
+        <span class="save-suffix">.md</span>
+      </div>
+      <button id="saveBtn" class="btn primary">Save to file</button>
+      <span id="saveResult" class="save-result"></span>
+    </footer>
+  </div>
+  <script type="module" src="/main.js"></script>
+</body>
+</html>
