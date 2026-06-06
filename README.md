@@ -62,3 +62,9 @@ for extension internals, the saved-file format, and development notes.
 Released under [Creative Commons CC0 1.0 Universal](LICENSE) — a public-domain
 dedication. You can copy, modify, and distribute this work, even for commercial
 purposes, without asking permission.
+
+---
+
+<p align="center">
+  <img src="docs/vcn-software-logo.png" alt="VCN Software" width="400">
+</p>
