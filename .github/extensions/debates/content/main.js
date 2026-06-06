@@ -22,6 +22,7 @@ const els = {
   saveBar: $("saveBar"),
   filename: $("filename"),
   save: $("saveBtn"),
+  copy: $("copyBtn"),
   saveResult: $("saveResult"),
 };
 
@@ -358,6 +359,28 @@ async function save() {
   }
 }
 
+async function copy() {
+  if (!lastResult) { els.saveResult.textContent = "Nothing to copy yet."; return; }
+  const original = els.copy.textContent;
+  els.copy.disabled = true;
+  els.saveResult.className = "save-result";
+  els.saveResult.textContent = "Copying…";
+  try {
+    // The extension writes to the OS clipboard (pbcopy/clip/xclip) so we don't
+    // depend on the webview's gesture-gated in-page clipboard API.
+    const chars = await copilot.copyDebate(lastResult);
+    els.saveResult.className = "save-result ok";
+    els.saveResult.textContent = `Copied to clipboard ✓ (${chars.toLocaleString()} chars)`;
+    els.copy.textContent = "✓ Copied";
+    setTimeout(() => { els.copy.textContent = original; }, 1600);
+  } catch (e) {
+    els.saveResult.className = "save-result error";
+    els.saveResult.textContent = `Copy failed: ${e.message || e}`;
+  } finally {
+    els.copy.disabled = false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------------
@@ -370,5 +393,6 @@ els.stop.addEventListener("click", () => {
 });
 els.refresh.addEventListener("click", loadModels);
 els.save.addEventListener("click", save);
+els.copy.addEventListener("click", copy);
 
 loadModels();

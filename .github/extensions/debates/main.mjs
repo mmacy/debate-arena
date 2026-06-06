@@ -5,6 +5,7 @@
 import { joinSession } from "@github/copilot-sdk/extension";
 import { join } from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { CopilotWebview } from "./lib/copilot-webview.js";
 
 const OLLAMA_HOST = process.env.OLLAMA_HOST?.replace(/\/+$/, "") || "http://127.0.0.1:11434";
@@ -23,6 +24,12 @@ const webview = new CopilotWebview({
         startDebate,
         stopDebate,
         saveDebate,
+        copyDebate: async (payload) => {
+            if (!payload || !payload.transcript) throw new Error("Nothing to copy yet — run a debate first.");
+            const md = renderMarkdown(payload);
+            await osClipboardCopy(md);
+            return md.length;
+        },
         log: (msg, opts) => session?.log(msg, opts),
     },
 });
@@ -38,6 +45,35 @@ async function push(fn, ...args) {
     } catch {
         /* page navigated/closed mid-stream — ignore */
     }
+}
+
+// ---------------------------------------------------------------------------
+// Write text to the OS clipboard from the extension (Node) side. WKWebView's
+// in-page clipboard API is gesture-gated and unreliable, so we shell out to the
+// platform clipboard utility instead. Linux tries xclip then wl-copy.
+// ---------------------------------------------------------------------------
+function osClipboardCopy(text) {
+    const candidates =
+        process.platform === "darwin" ? [["pbcopy", []]] :
+        process.platform === "win32" ? [["clip", []]] :
+        [["xclip", ["-selection", "clipboard"]], ["wl-copy", []]];
+
+    const tryOne = ([cmd, args]) =>
+        new Promise((resolve, reject) => {
+            const child = spawn(cmd, args);
+            child.on("error", reject);
+            child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exited with code ${code}`))));
+            child.stdin.on("error", () => {});
+            child.stdin.end(text);
+        });
+
+    return candidates.reduce(
+        (p, cand) => p.catch(() => tryOne(cand)),
+        Promise.reject(new Error("init"))
+    ).catch((e) => {
+        const hint = process.platform === "linux" ? " (install xclip or wl-clipboard)" : "";
+        throw new Error(`Could not access the system clipboard${hint}: ${e.message}`);
+    });
 }
 
 // ---------------------------------------------------------------------------

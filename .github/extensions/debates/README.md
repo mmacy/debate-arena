@@ -24,8 +24,10 @@ Everything runs **locally** through Ollama — nothing leaves your machine.
    the number of **rebuttal rounds** (1–3).
 3. Click **Start Debate**. Each turn streams in token-by-token:
    Opening Statements → Rebuttals → Closing Statements → Verdict.
-4. When the judge finishes, a winner banner appears. Click **Save to file** to
-   write the debate to `debates/<name>.md` in the current working directory.
+4. When the judge finishes, a glowing **🏆 Winner** pill appears next to the
+   winning model. Click **Save to file** to write the debate to
+   `debates/<name>.md` in the current working directory, or **Copy** to copy the
+   full debate Markdown to the clipboard.
 
 ## Saved file format
 
@@ -54,9 +56,11 @@ generator: "Debate Arena (Ollama)"
 
 - `main.mjs` — extension glue. Registers the `/debates` slash command and the
   `debates_show` / `debates_eval` / `debates_close` tools, and implements the
-  page callbacks (`listModels`, `startDebate`, `stopDebate`, `saveDebate`).
-  It streams Ollama `/api/chat` tokens and pushes them into the page via
-  `window.debateUI.*`.
+  page callbacks (`listModels`, `startDebate`, `stopDebate`, `saveDebate`,
+  `copyDebate`). It streams Ollama `/api/chat` tokens and pushes them into the
+  page via `window.debateUI.*`. **Copy** writes to the OS clipboard from the
+  extension (`pbcopy`/`clip`/`xclip`/`wl-copy`) rather than the webview's
+  gesture-gated in-page clipboard API, which is unreliable in WKWebView.
 - `content/` — the webview UI (vanilla HTML/CSS/JS, Discord-inspired dark theme).
 - `lib/` — the reusable `copilot-webview` host library (do not edit).
 
