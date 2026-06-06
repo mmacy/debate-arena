@@ -1,6 +1,6 @@
 # Debate Arena
 
-Pit two local [Ollama](https://ollama.com) language models against each other in
+Pit two local LLMs via [Ollama](https://ollama.com) against each other in
 a structured, judged debate — right from a native desktop window driven by the
 [GitHub Copilot CLI](https://github.com/github/copilot-cli).
 
