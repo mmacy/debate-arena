@@ -31,7 +31,7 @@ closing arguments. The judge then declares a winner and explains the verdict.
 
 1. Clone this repository and start the Copilot CLI from inside it:
    ```bash
-   git clone https://github.com/<your-org>/debate-arena.git
+   git clone https://github.com/mmacy/debate-arena.git
    cd debate-arena
    copilot
    ```
