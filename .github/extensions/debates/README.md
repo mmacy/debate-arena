@@ -7,13 +7,16 @@ resolution, and watch the match stream in live. The judge declares a winner and
 explains the decision; you can then save the whole thing to a Markdown file with
 YAML front matter.
 
-Everything runs **locally** through Ollama — nothing leaves your machine.
+By default the extension talks to a local Ollama instance, so debates stay on
+your machine. If you point `OLLAMA_HOST` at a remote or LAN server, your topic
+and the generated transcript are sent there instead.
 
 ## Requirements
 
 - [Ollama](https://ollama.com) running locally with at least one model pulled
-  (`ollama pull qwen3.5`, etc.). The extension talks to `http://127.0.0.1:11434`
-  by default; override with the `OLLAMA_HOST` environment variable.
+  (e.g. `ollama pull llama3.2` — any installed model works). The extension talks
+  to `http://127.0.0.1:11434` by default; override with the `OLLAMA_HOST`
+  environment variable.
 - Node.js (provided by the Copilot CLI runtime).
 
 ## Usage

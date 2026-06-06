@@ -3,7 +3,7 @@
 // ./content) drives everything through the `copilot.*` bridge; this file
 // implements those callbacks and streams the debate back into the page.
 import { joinSession } from "@github/copilot-sdk/extension";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { CopilotWebview } from "./lib/copilot-webview.js";
@@ -12,6 +12,7 @@ const OLLAMA_HOST = process.env.OLLAMA_HOST?.replace(/\/+$/, "") || "http://127.
 
 let session;
 let activeAbort = null;
+let runToken = 0;
 
 const webview = new CopilotWebview({
     extensionName: "debates",
@@ -61,8 +62,14 @@ function osClipboardCopy(text) {
     const tryOne = ([cmd, args]) =>
         new Promise((resolve, reject) => {
             const child = spawn(cmd, args);
-            child.on("error", reject);
-            child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exited with code ${code}`))));
+            let settled = false;
+            const done = (fn, arg) => { if (!settled) { settled = true; clearTimeout(timer); fn(arg); } };
+            const timer = setTimeout(() => {
+                try { child.kill(); } catch {}
+                done(reject, new Error(`${cmd} timed out`));
+            }, 4000);
+            child.on("error", (e) => done(reject, e));
+            child.on("close", (code) => (code === 0 ? done(resolve) : done(reject, new Error(`${cmd} exited with code ${code}`))));
             child.stdin.on("error", () => {});
             child.stdin.end(text);
         });
@@ -157,8 +164,8 @@ async function streamChat({ model, messages, signal, onDelta }) {
 // One spoken turn: announces a message card, streams the model's reply into
 // it (coalescing tokens onto a ~40ms flush), and records it in the transcript.
 // ---------------------------------------------------------------------------
-async function speak({ id, role, side, name, model, phase, system, history, signal }) {
-    await push("beginMessage", { id, role, side, name, model, phase });
+async function speak({ id, role, side, name, model, phase, system, history, signal, push: pushFn = push }) {
+    await pushFn("beginMessage", { id, role, side, name, model, phase });
 
     let pending = "";
     let lastFlush = 0;
@@ -168,7 +175,7 @@ async function speak({ id, role, side, name, model, phase, system, history, sign
             const delta = pending;
             pending = "";
             lastFlush = now;
-            await push("appendMessage", id, delta);
+            await pushFn("appendMessage", id, delta);
         }
     };
 
@@ -188,13 +195,13 @@ async function speak({ id, role, side, name, model, phase, system, history, sign
     } catch (e) {
         await flush(true);
         if (signal.aborted) {
-            await push("cancelMessage", id);
+            await pushFn("cancelMessage", id);
         } else {
-            await push("errorMessage", id, e.message);
+            await pushFn("errorMessage", id, e.message);
         }
         throw e;
     }
-    await push("endMessage", id);
+    await pushFn("endMessage", id);
     return text;
 }
 
@@ -264,6 +271,10 @@ async function startDebate(config) {
     const controller = new AbortController();
     activeAbort = controller;
     const signal = controller.signal;
+    const myToken = ++runToken;
+    // Suppress UI pushes from a superseded run so a stale debate can't write
+    // into (or "Stop"/"finish") a newer one that started after a restart.
+    const rpush = (...a) => (myToken === runToken ? push(...a) : Promise.resolve());
 
     const startedAt = new Date();
     const transcript = []; // { side, label, phase, text }
@@ -287,12 +298,13 @@ async function startDebate(config) {
             system: isPro ? proSys : conSys,
             history: historyFor(side, transcript),
             signal,
+            push: rpush,
         });
         transcript.push({ side, label: isPro ? proLabel : conLabel, phase, text });
     };
 
     try {
-        await push("debateStarted", {
+        await rpush("debateStarted", {
             topic,
             proModel,
             conModel,
@@ -302,25 +314,25 @@ async function startDebate(config) {
         });
 
         // Opening statements
-        await push("phase", "Opening Statements");
+        await rpush("phase", "Opening Statements");
         await turn("pro", "Opening Statement");
         await turn("con", "Opening Statement");
 
         // Rebuttal rounds
         for (let r = 1; r <= rounds; r++) {
             const label = rounds > 1 ? `Rebuttal — Round ${r}` : "Rebuttal";
-            await push("phase", label);
+            await rpush("phase", label);
             await turn("pro", label);
             await turn("con", label);
         }
 
         // Closing statements
-        await push("phase", "Closing Statements");
+        await rpush("phase", "Closing Statements");
         await turn("pro", "Closing Statement");
         await turn("con", "Closing Statement");
 
         // Judge verdict
-        await push("phase", "The Verdict");
+        await rpush("phase", "The Verdict");
         const judgeId = nextId();
         const verdictText = await speak({
             id: judgeId,
@@ -337,6 +349,7 @@ async function startDebate(config) {
                 },
             ],
             signal,
+            push: rpush,
         });
 
         const { winner, winnerLabel } = parseWinner(verdictText, proLabel, conLabel);
@@ -355,14 +368,14 @@ async function startDebate(config) {
             transcript,
             verdict: verdictText,
         };
-        await push("debateFinished", { winner, winnerLabel });
+        await rpush("debateFinished", { winner, winnerLabel });
         return result;
     } catch (e) {
         if (signal.aborted) {
-            await push("debateCancelled");
+            await rpush("debateCancelled");
             return { cancelled: true };
         }
-        await push("debateError", e.message);
+        await rpush("debateError", e.message);
         throw e;
     } finally {
         if (activeAbort === controller) activeAbort = null;
@@ -398,18 +411,34 @@ async function saveDebate(payload, filename) {
     await mkdir(dir, { recursive: true });
 
     const base =
-        (filename && String(filename).trim()) ||
+        safeFileName(filename) ||
         `${slug(payload.topic)}-${stamp(payload.finishedAt)}`;
     const name = base.toLowerCase().endsWith(".md") ? base : `${base}.md`;
     const path = join(dir, name);
+
+    // Defense in depth: never let a crafted name escape the debates/ directory.
+    if (resolve(path) !== path || !resolve(path).startsWith(resolve(dir) + sep)) {
+        throw new Error("Invalid filename.");
+    }
 
     await writeFile(path, renderMarkdown(payload), "utf8");
     await session?.log(`Saved debate to ${path}`);
     return path;
 }
 
+// Reduce a user-supplied filename to a single safe path segment (no directory
+// traversal, no path separators, no leading dots). Returns "" if nothing usable.
+function safeFileName(input) {
+    if (!input) return "";
+    const lastSegment = String(input).trim().replace(/\\/g, "/").split("/").pop() || "";
+    const cleaned = lastSegment.replace(/[^A-Za-z0-9._ -]/g, "").replace(/^\.+/, "").trim();
+    return cleaned === ".md" ? "" : cleaned;
+}
+
 function renderMarkdown(p) {
-    const yamlStr = (s) => `"${String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+    // JSON double-quoted strings are valid YAML flow scalars and correctly
+    // escape quotes, backslashes, newlines, and control characters.
+    const yamlStr = (s) => JSON.stringify(String(s ?? ""));
     const fm = [
         "---",
         `title: ${yamlStr(`Debate: ${p.topic}`)}`,
