@@ -11,6 +11,7 @@ const els = {
   start: $("startBtn"),
   stop: $("stopBtn"),
   refresh: $("refreshBtn"),
+  swap: $("swapBtn"),
   setupMsg: $("setupMsg"),
   status: $("statusPill"),
   statusText: $("statusPill").querySelector(".status-text"),
@@ -52,6 +53,7 @@ function hideWinPills() {
 async function loadModels() {
   setSetupMsg("Loading models…");
   els.start.disabled = true;
+  els.swap.disabled = true;
   try {
     const models = await copilot.listModels();
     for (const sel of [els.pro, els.con, els.judge]) sel.innerHTML = "";
@@ -69,6 +71,7 @@ async function loadModels() {
     els.judge.selectedIndex = Math.min(2, models.length - 1);
     setSetupMsg(`${models.length} model${models.length === 1 ? "" : "s"} available.`);
     els.start.disabled = false;
+    els.swap.disabled = false;
   } catch (e) {
     for (const sel of [els.pro, els.con, els.judge]) sel.innerHTML = '<option>—</option>';
     setSetupMsg(e.message || String(e), true);
@@ -299,6 +302,7 @@ function setRunning(running) {
   els.judge.disabled = running;
   els.rounds.disabled = running;
   els.refresh.disabled = running;
+  els.swap.disabled = running;
 }
 function finishRun() {
   setRunning(false);
@@ -392,6 +396,11 @@ els.stop.addEventListener("click", () => {
   copilot.stopDebate();
 });
 els.refresh.addEventListener("click", loadModels);
+els.swap.addEventListener("click", () => {
+  const pro = els.pro.value;
+  els.pro.value = els.con.value;
+  els.con.value = pro;
+});
 els.save.addEventListener("click", save);
 els.copy.addEventListener("click", copy);
 

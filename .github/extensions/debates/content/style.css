@@ -93,7 +93,7 @@ body {
   background: var(--bg-base);
   border-bottom: 1px solid var(--border-soft);
 }
-.field { display: flex; flex-direction: column; gap: 6px; }
+.field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .field label {
   font-size: 11px; font-weight: 700; text-transform: uppercase;
   letter-spacing: 0.6px; color: var(--text-faint);
@@ -120,7 +120,7 @@ textarea:focus, select:focus, input.filename:focus {
   border-color: var(--blurple);
   box-shadow: 0 0 0 3px rgba(88, 101, 242, 0.25);
 }
-select { cursor: pointer; appearance: none;
+select { cursor: pointer; appearance: none; width: 100%; min-width: 0;
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path fill='%23b5bac1' d='M6 8L1 3h10z'/></svg>");
   background-repeat: no-repeat; background-position: right 12px center; padding-right: 30px;
 }
@@ -128,10 +128,29 @@ select { cursor: pointer; appearance: none;
 .topic-field { margin-bottom: 14px; }
 .config-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr 130px;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) minmax(0, 1fr) 130px;
   gap: 14px;
   margin-bottom: 14px;
 }
+
+.swap-btn {
+  align-self: end;
+  height: 40px;
+  width: 38px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; line-height: 1;
+  color: var(--text-muted);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, transform 0.12s;
+}
+.swap-btn:hover:not(:disabled) {
+  background: #41434a; color: var(--text); transform: scaleX(-1);
+}
+.swap-btn:active:not(:disabled) { transform: scaleX(-1) translateY(1px); }
+.swap-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .actions { display: flex; align-items: center; gap: 10px; }
 .btn {
