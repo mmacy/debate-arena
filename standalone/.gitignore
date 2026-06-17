@@ -1,0 +1,5 @@
+# Generated debate transcripts, when the server is launched from this directory.
+/debates/
+
+# Only present if someone runs `npm install` here — the app needs no dependencies.
+/node_modules/

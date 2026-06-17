@@ -1,0 +1,17 @@
+{
+  "name": "debate-arena-standalone",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Standalone, dependency-free local app that pits two Ollama models in a judged debate.",
+  "type": "module",
+  "bin": {
+    "debate-arena": "server.mjs"
+  },
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "CC0-1.0"
+}
