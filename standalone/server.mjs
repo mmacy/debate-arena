@@ -156,6 +156,12 @@ async function speak({ id, role, side, name, model, phase, system, history, sign
         }
     };
 
+    // For debaters, hold back the start of the stream until it is clear
+    // whether it opens with a label line, and drop the label if it does.
+    // "check": looking for a label; "trim": label dropped, skipping the
+    // whitespace after it; "done": streaming normally.
+    let startState = role === "debater" ? "check" : "done";
+
     const messages = [{ role: "system", content: system }, ...history];
     let text;
     try {
@@ -165,9 +171,27 @@ async function speak({ id, role, side, name, model, phase, system, history, sign
             signal,
             onDelta: async (piece) => {
                 pending += piece;
+                if (startState !== "done") {
+                    pending = pending.trimStart();
+                    if (!pending) return;
+                    if (startState === "check" && pending.startsWith("[")) {
+                        const label = pending.match(LEADING_LABEL);
+                        // Keep buffering while a label line may still be arriving.
+                        if (!label && !pending.includes("\n") && pending.length <= MAX_LABEL_LENGTH) return;
+                        if (label) {
+                            pending = pending.slice(label[0].length).trimStart();
+                            if (!pending) {
+                                startState = "trim";
+                                return;
+                            }
+                        }
+                    }
+                    startState = "done";
+                }
                 await flush(false);
             },
         });
+        if (role === "debater") text = text.replace(LEADING_LABEL, "").trimStart();
         await flush(true);
     } catch (e) {
         await flush(true);
@@ -188,13 +212,15 @@ async function speak({ id, role, side, name, model, phase, system, history, sign
 function debaterSystem(side, topic) {
     const stance = side === "pro" ? "in FAVOR of" : "AGAINST";
     const persona = side === "pro" ? "the Affirmative (Pro)" : "the Negative (Con)";
+    const other = side === "pro" ? "the Con side" : "the Pro side";
     return [
         `You are a sharp, persuasive competitive debater arguing ${persona}.`,
         `The resolution under debate is: "${topic}".`,
         `You must argue ${stance} this resolution at all times — never concede the other side.`,
         `Be substantive: make clear claims, support them with reasoning and concrete examples,`,
-        `directly rebut your opponent's points when responding, and stay civil but forceful.`,
-        `Write in flowing prose (light Markdown is fine). Keep each turn focused — roughly 150-250 words.`,
+        `and stay civil but forceful.`,
+        `Speak in the first person. When you refer to the other debater, call them "my opponent" or "${other}", never "your opponent".`,
+        `Write in direct prose and keep each turn focused — roughly 150-250 words.`,
         `Do not break character, do not address the judge directly, and do not narrate stage directions.`,
     ].join(" ");
 }
@@ -211,16 +237,56 @@ function judgeSystem(topic) {
     ].join(" ");
 }
 
-// Render the running transcript as plain text for a debater's conversation history.
-function historyFor(currentSide, transcript) {
-    return transcript.map((t) => {
-        const speaker = t.side === currentSide ? "You" : "Your opponent";
-        return {
-            role: t.side === currentSide ? "assistant" : "user",
-            content: `[${t.phase} — ${speaker} (${t.label})]\n${t.text}`,
-        };
-    });
+// Build a debater's conversation history from the transcript so far, ending
+// with a request for the speech in `phase`. The debater's own speeches go back
+// as bare assistant text, because a label on them teaches the model to open
+// its next speech with one. Each own speech follows the request that produced
+// it, so roles alternate and every history starts with a user message.
+function historyFor(currentSide, transcript, phase) {
+    const messages = [];
+    let opponentHasSpoken = false;
+    const request = (speech) => {
+        const instruction = speechRequest(currentSide, speech, opponentHasSpoken);
+        const last = messages.at(-1);
+        if (last?.role === "user") last.content += `\n\n${instruction}`;
+        else messages.push({ role: "user", content: instruction });
+    };
+    for (const t of transcript) {
+        if (t.side === currentSide) {
+            request(t.phase);
+            messages.push({ role: "assistant", content: t.text });
+        } else {
+            const name = t.side === "pro" ? "Pro" : "Con";
+            messages.push({ role: "user", content: `[${name}'s ${t.phase.toLowerCase()}]\n${t.text}` });
+            opponentHasSpoken = true;
+        }
+    }
+    request(phase);
+    return messages;
 }
+
+// The request for one speech, which says what that phase of the debate calls
+// for. Pro's opening is told that Con has not spoken, so it does not rebut
+// arguments nobody has made.
+function speechRequest(side, phase, opponentHasSpoken) {
+    const other = side === "pro" ? "the Con side" : "the Pro side";
+    let task;
+    if (phase.startsWith("Opening")) {
+        task = opponentHasSpoken
+            ? `Present your own case. You may also respond to ${other}'s opening.`
+            : `You speak first, and ${other} has not spoken yet. Present your own case, and do not respond to arguments that have not been made.`;
+    } else if (phase.startsWith("Rebuttal")) {
+        task = `Respond directly to the arguments ${other} has made so far, and reinforce your own case.`;
+    } else {
+        task = `Summarize why your side has won the debate, without introducing new arguments.`;
+    }
+    return `Deliver your ${phase.toLowerCase()} now. ${task} Respond with the speech only, with no heading or label.`;
+}
+
+// Some models still open a speech with a transcript-style label on its own
+// line, such as "[Rebuttal — You (Pro · model)]". speak() strips it.
+const MAX_LABEL_LENGTH = 200;
+const LEADING_LABEL = new RegExp(`^\\[[^\\]\\n]{1,${MAX_LABEL_LENGTH}}\\][ \\t]*\\n`);
 
 // Flat transcript for the judge.
 function judgeTranscript(transcript) {
@@ -271,7 +337,7 @@ async function startDebate(config) {
             model: isPro ? proModel : conModel,
             phase,
             system: isPro ? proSys : conSys,
-            history: historyFor(side, transcript),
+            history: historyFor(side, transcript, phase),
             signal,
             push: rpush,
         });
