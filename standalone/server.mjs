@@ -212,12 +212,14 @@ async function speak({ id, role, side, name, model, phase, system, history, sign
 function debaterSystem(side, topic) {
     const stance = side === "pro" ? "in FAVOR of" : "AGAINST";
     const persona = side === "pro" ? "the Affirmative (Pro)" : "the Negative (Con)";
+    const other = side === "pro" ? "the Con side" : "the Pro side";
     return [
         `You are a sharp, persuasive competitive debater arguing ${persona}.`,
         `The resolution under debate is: "${topic}".`,
         `You must argue ${stance} this resolution at all times — never concede the other side.`,
         `Be substantive: make clear claims, support them with reasoning and concrete examples,`,
-        `directly rebut your opponent's points when responding, and stay civil but forceful.`,
+        `directly rebut ${other}'s points when responding, and stay civil but forceful.`,
+        `Speak in the first person. Refer to the other debater as "my opponent" or "${other}", never "your opponent".`,
         `Write in direct prose and keep each turn focused — roughly 150-250 words.`,
         `Do not break character, do not address the judge directly, and do not narrate stage directions.`,
     ].join(" ");
@@ -253,7 +255,8 @@ function historyFor(currentSide, transcript, phase) {
             request(t.phase);
             messages.push({ role: "assistant", content: t.text });
         } else {
-            messages.push({ role: "user", content: `[${t.phase} — Your opponent]\n${t.text}` });
+            const name = t.side === "pro" ? "Pro" : "Con";
+            messages.push({ role: "user", content: `[${name}'s ${t.phase.toLowerCase()}]\n${t.text}` });
         }
     }
     request(phase);
