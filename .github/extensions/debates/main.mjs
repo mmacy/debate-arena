@@ -241,8 +241,8 @@ function debaterSystem(side, topic) {
         `The resolution under debate is: "${topic}".`,
         `You must argue ${stance} this resolution at all times — never concede the other side.`,
         `Be substantive: make clear claims, support them with reasoning and concrete examples,`,
-        `directly rebut ${other}'s points when responding, and stay civil but forceful.`,
-        `Speak in the first person. Refer to the other debater as "my opponent" or "${other}", never "your opponent".`,
+        `and stay civil but forceful.`,
+        `Speak in the first person. When you refer to the other debater, call them "my opponent" or "${other}", never "your opponent".`,
         `Write in flowing prose (light Markdown is fine). Keep each turn focused — roughly 150-250 words.`,
         `Do not break character, do not address the judge directly, and do not narrate stage directions.`,
     ].join(" ");
@@ -267,8 +267,9 @@ function judgeSystem(topic) {
 // it, so roles alternate and every history starts with a user message.
 function historyFor(currentSide, transcript, phase) {
     const messages = [];
+    let opponentHasSpoken = false;
     const request = (speech) => {
-        const instruction = `Deliver your ${speech.toLowerCase()} now. Respond with the speech only, with no heading or label.`;
+        const instruction = speechRequest(currentSide, speech, opponentHasSpoken);
         const last = messages.at(-1);
         if (last?.role === "user") last.content += `\n\n${instruction}`;
         else messages.push({ role: "user", content: instruction });
@@ -280,10 +281,29 @@ function historyFor(currentSide, transcript, phase) {
         } else {
             const name = t.side === "pro" ? "Pro" : "Con";
             messages.push({ role: "user", content: `[${name}'s ${t.phase.toLowerCase()}]\n${t.text}` });
+            opponentHasSpoken = true;
         }
     }
     request(phase);
     return messages;
+}
+
+// The request for one speech, which says what that phase of the debate calls
+// for. Pro's opening is told that Con has not spoken, so it does not rebut
+// arguments nobody has made.
+function speechRequest(side, phase, opponentHasSpoken) {
+    const other = side === "pro" ? "the Con side" : "the Pro side";
+    let task;
+    if (phase.startsWith("Opening")) {
+        task = opponentHasSpoken
+            ? `Present your own case. You may also respond to ${other}'s opening.`
+            : `You speak first, and ${other} has not spoken yet. Present your own case, and do not respond to arguments that have not been made.`;
+    } else if (phase.startsWith("Rebuttal")) {
+        task = `Respond directly to the arguments ${other} has made so far, and reinforce your own case.`;
+    } else {
+        task = `Summarize why your side has won the debate, without introducing new arguments.`;
+    }
+    return `Deliver your ${phase.toLowerCase()} now. ${task} Respond with the speech only, with no heading or label.`;
 }
 
 // Some models still open a speech with a transcript-style label on its own
