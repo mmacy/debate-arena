@@ -2,13 +2,20 @@
   "name": "debate-arena-standalone",
   "version": "1.0.0",
   "private": true,
-  "description": "Standalone, dependency-free local app that pits two Ollama models in a judged debate.",
+  "description": "Standalone local app that pits models from multiple providers in a judged debate.",
   "type": "module",
   "bin": {
     "debate-arena": "server.mjs"
   },
   "scripts": {
     "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.137.0",
+    "@azure/identity": "4.10.0",
+    "@google/genai": "1.0.0",
+    "@mistralai/mistralai": "2.2.0",
+    "openai": "6.49.0"
   },
   "engines": {
     "node": ">=18"
