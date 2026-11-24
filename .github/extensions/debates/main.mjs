@@ -1,4 +1,4 @@
-// Debate Arena — pits two local Ollama models against each other in a
+// Debate Arena — pits models from supported providers against each other in a
 // structured debate, judged by a third model. The native window (served from
 // ./content) drives everything through the `copilot.*` bridge; this file
 // implements those callbacks and streams the debate back into the page.
@@ -6,13 +6,25 @@ import { joinSession } from "@github/copilot-sdk/extension";
 import { join, resolve, sep } from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import Anthropic from "@anthropic-ai/sdk";
+import { DefaultAzureCredential, getBearerTokenProvider } from "@azure/identity";
+import { GoogleGenAI } from "@google/genai";
+import { Mistral } from "@mistralai/mistralai";
+import OpenAI from "openai";
 import { CopilotWebview } from "./lib/copilot-webview.js";
-
-const OLLAMA_HOST = process.env.OLLAMA_HOST?.replace(/\/+$/, "") || "http://127.0.0.1:11434";
+import { createProviderRuntime } from "../../../shared/providers.mjs";
 
 let session;
 let activeAbort = null;
 let runToken = 0;
+const modelRuntime = createProviderRuntime({
+    Anthropic,
+    Mistral,
+    OpenAI,
+    GoogleGenAI,
+    DefaultAzureCredential,
+    getBearerTokenProvider,
+});
 
 const webview = new CopilotWebview({
     extensionName: "debates",
@@ -83,81 +95,12 @@ function osClipboardCopy(text) {
     });
 }
 
-// ---------------------------------------------------------------------------
-// Ollama: list installed models
-// ---------------------------------------------------------------------------
 async function listModels() {
-    const res = await fetch(`${OLLAMA_HOST}/api/tags`, {
-        signal: AbortSignal.timeout(8000),
-    }).catch((e) => {
-        throw new Error(`Could not reach Ollama at ${OLLAMA_HOST}. Is it running? (${e.message})`);
-    });
-    if (!res.ok) throw new Error(`Ollama responded ${res.status} ${res.statusText}`);
-    const data = await res.json();
-    const models = (data.models || [])
-        .map((m) => m.name)
-        .filter(Boolean)
-        .sort((a, b) => a.localeCompare(b));
-    if (!models.length) {
-        throw new Error("Ollama is running but no models are installed. Pull one with `ollama pull <model>`.");
-    }
-    return models;
+    return modelRuntime.listModels();
 }
 
-// ---------------------------------------------------------------------------
-// Ollama: stream a chat completion, pushing token deltas into the page via the
-// provided onDelta callback. Returns the full assembled text.
-// ---------------------------------------------------------------------------
 async function streamChat({ model, messages, signal, onDelta }) {
-    const res = await fetch(`${OLLAMA_HOST}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            model,
-            messages,
-            stream: true,
-            think: false,
-            options: { temperature: 0.8 },
-        }),
-        signal,
-    });
-    if (!res.ok || !res.body) {
-        const detail = await res.text().catch(() => "");
-        throw new Error(`Ollama /api/chat failed for "${model}" (${res.status}). ${detail}`.trim());
-    }
-
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let full = "";
-
-    const handleLine = async (line) => {
-        const trimmed = line.trim();
-        if (!trimmed) return;
-        let obj;
-        try {
-            obj = JSON.parse(trimmed);
-        } catch {
-            return;
-        }
-        if (obj.error) throw new Error(obj.error);
-        const piece = obj.message?.content || "";
-        if (piece) {
-            full += piece;
-            await onDelta(piece);
-        }
-    };
-
-    for await (const chunk of res.body) {
-        buffer += decoder.decode(chunk, { stream: true });
-        let nl;
-        while ((nl = buffer.indexOf("\n")) !== -1) {
-            const line = buffer.slice(0, nl);
-            buffer = buffer.slice(nl + 1);
-            await handleLine(line);
-        }
-    }
-    if (buffer) await handleLine(buffer);
-    return full.trim();
+    return modelRuntime.streamChat({ model, messages, signal, onDelta });
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +108,8 @@ async function streamChat({ model, messages, signal, onDelta }) {
 // it (coalescing tokens onto a ~40ms flush), and records it in the transcript.
 // ---------------------------------------------------------------------------
 async function speak({ id, role, side, name, model, phase, system, history, signal, push: pushFn = push }) {
-    await pushFn("beginMessage", { id, role, side, name, model, phase });
+    const selection = modelRuntime.resolveModel(model);
+    await pushFn("beginMessage", { id, role, side, name, model: selection.label, phase });
 
     let pending = "";
     let lastFlush = 0;
@@ -325,13 +269,11 @@ function judgeTranscript(transcript) {
 // ---------------------------------------------------------------------------
 async function startDebate(config) {
     const topic = String(config?.topic || "").trim();
-    const proModel = config?.proModel;
-    const conModel = config?.conModel;
-    const judgeModel = config?.judgeModel;
-    const rounds = Math.min(Math.max(parseInt(config?.rounds, 10) || 1, 1), 3);
-
     if (!topic) throw new Error("Please enter a debate topic.");
-    if (!proModel || !conModel || !judgeModel) throw new Error("Please choose a model for both debaters and the judge.");
+    const proSelection = modelRuntime.resolveModel(config?.proModel);
+    const conSelection = modelRuntime.resolveModel(config?.conModel);
+    const judgeSelection = modelRuntime.resolveModel(config?.judgeModel);
+    const rounds = Math.min(Math.max(parseInt(config?.rounds, 10) || 1, 1), 3);
 
     if (activeAbort) activeAbort.abort();
     const controller = new AbortController();
@@ -349,8 +291,8 @@ async function startDebate(config) {
 
     const proSys = debaterSystem("pro", topic);
     const conSys = debaterSystem("con", topic);
-    const proLabel = `Pro · ${proModel}`;
-    const conLabel = `Con · ${conModel}`;
+    const proLabel = `Pro · ${proSelection.label}`;
+    const conLabel = `Con · ${conSelection.label}`;
 
     const turn = async (side, phase) => {
         const isPro = side === "pro";
@@ -359,7 +301,7 @@ async function startDebate(config) {
             role: "debater",
             side,
             name: isPro ? "Pro" : "Con",
-            model: isPro ? proModel : conModel,
+            model: isPro ? proSelection.ref : conSelection.ref,
             phase,
             system: isPro ? proSys : conSys,
             history: historyFor(side, transcript, phase),
@@ -372,9 +314,9 @@ async function startDebate(config) {
     try {
         await rpush("debateStarted", {
             topic,
-            proModel,
-            conModel,
-            judgeModel,
+            proModel: proSelection.label,
+            conModel: conSelection.label,
+            judgeModel: judgeSelection.label,
             rounds,
             startedAt: startedAt.toISOString(),
         });
@@ -405,7 +347,7 @@ async function startDebate(config) {
             role: "judge",
             side: "judge",
             name: "Judge",
-            model: judgeModel,
+            model: judgeSelection.ref,
             phase: "Verdict",
             system: judgeSystem(topic),
             history: [
@@ -422,9 +364,12 @@ async function startDebate(config) {
         const finishedAt = new Date();
         const result = {
             topic,
-            proModel,
-            conModel,
-            judgeModel,
+            proModel: proSelection.model,
+            proProvider: proSelection.provider,
+            conModel: conSelection.model,
+            conProvider: conSelection.provider,
+            judgeModel: judgeSelection.model,
+            judgeProvider: judgeSelection.provider,
             rounds,
             startedAt: startedAt.toISOString(),
             finishedAt: finishedAt.toISOString(),
@@ -514,11 +459,15 @@ function renderMarkdown(p) {
         `  pro: ${yamlStr(p.proModel)}`,
         `  con: ${yamlStr(p.conModel)}`,
         `judge: ${yamlStr(p.judgeModel)}`,
+        "providers:",
+        `  pro: ${yamlStr(p.proProvider || "ollama")}`,
+        `  con: ${yamlStr(p.conProvider || "ollama")}`,
+        `  judge: ${yamlStr(p.judgeProvider || "ollama")}`,
         `rounds: ${p.rounds}`,
         `winner: ${yamlStr(p.winner)}`,
         `winner_label: ${yamlStr(p.winnerLabel)}`,
         `duration_seconds: ${Math.round((p.durationMs || 0) / 1000)}`,
-        `generator: "Debate Arena (Ollama)"`,
+        `generator: "Debate Arena"`,
         "---",
         "",
     ].join("\n");
@@ -533,7 +482,7 @@ function renderMarkdown(p) {
         "",
         `> ${winnerLine}`,
         ">",
-        `> Pro: \`${p.proModel}\` · Con: \`${p.conModel}\` · Judge: \`${p.judgeModel}\``,
+        `> Pro: \`${modelLabel(p.proProvider, p.proModel)}\` · Con: \`${modelLabel(p.conProvider, p.conModel)}\` · Judge: \`${modelLabel(p.judgeProvider, p.judgeModel)}\``,
         "",
         "## Transcript",
         "",
@@ -559,6 +508,10 @@ function slug(s) {
     );
 }
 
+function modelLabel(provider, model) {
+    return modelRuntime.resolveModel(provider ? `${provider}:${model}` : model).label;
+}
+
 function stamp(iso) {
     const d = iso ? new Date(iso) : new Date();
     return d.toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
@@ -572,7 +525,7 @@ session = await joinSession({
     commands: [
         {
             name: "debates",
-            description: "Open the Debate Arena — pit two local Ollama models against each other, judged by a third.",
+            description: "Open the Debate Arena — pit models from Ollama, Anthropic, Mistral, OpenAI, Microsoft Foundry, or Google Gemini against each other.",
             handler: async () => {
                 await webview.show();
             },

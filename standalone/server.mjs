@@ -1,7 +1,7 @@
 // Debate Arena — standalone server.
 //
-// A zero-dependency local app that pits two Ollama models against each other in
-// a structured, judged debate. It mirrors the Copilot CLI extension's behaviour
+// A local app that pits models from supported providers against each other in a
+// structured, judged debate. It mirrors the Copilot CLI extension's behaviour
 // (same orchestration, same Markdown output) but runs on its own: a plain Node
 // HTTP server serves the UI and exposes the same callbacks the page expects.
 //
@@ -9,10 +9,12 @@
 // uses the two primitives every browser already has — `fetch` for request/reply
 // RPC (POST /api/rpc) and Server-Sent Events for the streaming push channel
 // (GET /api/events). That keeps the page's `window.copilot.*` / `window.debateUI.*`
-// contract intact while needing no npm dependencies at all.
+// contract intact.
 //
 // Run it with `node server.mjs` (Node 18+). Configure via env:
 //   OLLAMA_HOST      Ollama base URL (default http://127.0.0.1:11434)
+//   AZURE_FOUNDRY_ENDPOINT (uses DefaultAzureCredential unless a key is set)
+//   ANTHROPIC_API_KEY (or an `ant auth login` profile) / MISTRAL_API_KEY / OPENAI_API_KEY
 //   DEBATE_PORT      preferred port (default 4757; falls forward if taken)
 //   DEBATE_SAVE_DIR  where to write debates/ (default: current directory)
 //   NO_OPEN          set to anything to skip auto-opening the browser
@@ -22,15 +24,28 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, join, normalize, resolve, sep, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import Anthropic from "@anthropic-ai/sdk";
+import { DefaultAzureCredential, getBearerTokenProvider } from "@azure/identity";
+import { GoogleGenAI } from "@google/genai";
+import { Mistral } from "@mistralai/mistralai";
+import OpenAI from "openai";
+import { createProviderRuntime } from "../shared/providers.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(__dirname, "public");
-const OLLAMA_HOST = process.env.OLLAMA_HOST?.replace(/\/+$/, "") || "http://127.0.0.1:11434";
 const PORT = Number(process.env.DEBATE_PORT) || 4757;
 const SAVE_ROOT = process.env.DEBATE_SAVE_DIR ? resolve(process.env.DEBATE_SAVE_DIR) : process.cwd();
 
 let activeAbort = null;
 let runToken = 0;
+const modelRuntime = createProviderRuntime({
+    Anthropic,
+    Mistral,
+    OpenAI,
+    GoogleGenAI,
+    DefaultAzureCredential,
+    getBearerTokenProvider,
+});
 
 // ---------------------------------------------------------------------------
 // SSE push channel. Every connected page gets one open response; `push` fans a
@@ -60,81 +75,12 @@ function log(msg) {
     process.stdout.write(`${msg}\n`);
 }
 
-// ---------------------------------------------------------------------------
-// Ollama: list installed models
-// ---------------------------------------------------------------------------
 async function listModels() {
-    const res = await fetch(`${OLLAMA_HOST}/api/tags`, {
-        signal: AbortSignal.timeout(8000),
-    }).catch((e) => {
-        throw new Error(`Could not reach Ollama at ${OLLAMA_HOST}. Is it running? (${e.message})`);
-    });
-    if (!res.ok) throw new Error(`Ollama responded ${res.status} ${res.statusText}`);
-    const data = await res.json();
-    const models = (data.models || [])
-        .map((m) => m.name)
-        .filter(Boolean)
-        .sort((a, b) => a.localeCompare(b));
-    if (!models.length) {
-        throw new Error("Ollama is running but no models are installed. Pull one with `ollama pull <model>`.");
-    }
-    return models;
+    return modelRuntime.listModels();
 }
 
-// ---------------------------------------------------------------------------
-// Ollama: stream a chat completion, pushing token deltas through onDelta.
-// Returns the full assembled text.
-// ---------------------------------------------------------------------------
 async function streamChat({ model, messages, signal, onDelta }) {
-    const res = await fetch(`${OLLAMA_HOST}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            model,
-            messages,
-            stream: true,
-            think: false,
-            options: { temperature: 0.8 },
-        }),
-        signal,
-    });
-    if (!res.ok || !res.body) {
-        const detail = await res.text().catch(() => "");
-        throw new Error(`Ollama /api/chat failed for "${model}" (${res.status}). ${detail}`.trim());
-    }
-
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let full = "";
-
-    const handleLine = async (line) => {
-        const trimmed = line.trim();
-        if (!trimmed) return;
-        let obj;
-        try {
-            obj = JSON.parse(trimmed);
-        } catch {
-            return;
-        }
-        if (obj.error) throw new Error(obj.error);
-        const piece = obj.message?.content || "";
-        if (piece) {
-            full += piece;
-            await onDelta(piece);
-        }
-    };
-
-    for await (const chunk of res.body) {
-        buffer += decoder.decode(chunk, { stream: true });
-        let nl;
-        while ((nl = buffer.indexOf("\n")) !== -1) {
-            const line = buffer.slice(0, nl);
-            buffer = buffer.slice(nl + 1);
-            await handleLine(line);
-        }
-    }
-    if (buffer) await handleLine(buffer);
-    return full.trim();
+    return modelRuntime.streamChat({ model, messages, signal, onDelta });
 }
 
 // ---------------------------------------------------------------------------
@@ -142,7 +88,8 @@ async function streamChat({ model, messages, signal, onDelta }) {
 // it (coalescing tokens onto a ~40ms flush), and records it in the transcript.
 // ---------------------------------------------------------------------------
 async function speak({ id, role, side, name, model, phase, system, history, signal, push: pushFn = push }) {
-    await pushFn("beginMessage", { id, role, side, name, model, phase });
+    const selection = modelRuntime.resolveModel(model);
+    await pushFn("beginMessage", { id, role, side, name, model: selection.label, phase });
 
     let pending = "";
     let lastFlush = 0;
@@ -300,13 +247,11 @@ function judgeTranscript(transcript) {
 // ---------------------------------------------------------------------------
 async function startDebate(config) {
     const topic = String(config?.topic || "").trim();
-    const proModel = config?.proModel;
-    const conModel = config?.conModel;
-    const judgeModel = config?.judgeModel;
-    const rounds = Math.min(Math.max(parseInt(config?.rounds, 10) || 1, 1), 3);
-
     if (!topic) throw new Error("Please enter a debate topic.");
-    if (!proModel || !conModel || !judgeModel) throw new Error("Please choose a model for both debaters and the judge.");
+    const proSelection = modelRuntime.resolveModel(config?.proModel);
+    const conSelection = modelRuntime.resolveModel(config?.conModel);
+    const judgeSelection = modelRuntime.resolveModel(config?.judgeModel);
+    const rounds = Math.min(Math.max(parseInt(config?.rounds, 10) || 1, 1), 3);
 
     if (activeAbort) activeAbort.abort();
     const controller = new AbortController();
@@ -324,8 +269,8 @@ async function startDebate(config) {
 
     const proSys = debaterSystem("pro", topic);
     const conSys = debaterSystem("con", topic);
-    const proLabel = `Pro · ${proModel}`;
-    const conLabel = `Con · ${conModel}`;
+    const proLabel = `Pro · ${proSelection.label}`;
+    const conLabel = `Con · ${conSelection.label}`;
 
     const turn = async (side, phase) => {
         const isPro = side === "pro";
@@ -334,7 +279,7 @@ async function startDebate(config) {
             role: "debater",
             side,
             name: isPro ? "Pro" : "Con",
-            model: isPro ? proModel : conModel,
+            model: isPro ? proSelection.ref : conSelection.ref,
             phase,
             system: isPro ? proSys : conSys,
             history: historyFor(side, transcript, phase),
@@ -347,9 +292,9 @@ async function startDebate(config) {
     try {
         await rpush("debateStarted", {
             topic,
-            proModel,
-            conModel,
-            judgeModel,
+            proModel: proSelection.label,
+            conModel: conSelection.label,
+            judgeModel: judgeSelection.label,
             rounds,
             startedAt: startedAt.toISOString(),
         });
@@ -380,7 +325,7 @@ async function startDebate(config) {
             role: "judge",
             side: "judge",
             name: "Judge",
-            model: judgeModel,
+            model: judgeSelection.ref,
             phase: "Verdict",
             system: judgeSystem(topic),
             history: [
@@ -397,9 +342,12 @@ async function startDebate(config) {
         const finishedAt = new Date();
         const result = {
             topic,
-            proModel,
-            conModel,
-            judgeModel,
+            proModel: proSelection.model,
+            proProvider: proSelection.provider,
+            conModel: conSelection.model,
+            conProvider: conSelection.provider,
+            judgeModel: judgeSelection.model,
+            judgeProvider: judgeSelection.provider,
             rounds,
             startedAt: startedAt.toISOString(),
             finishedAt: finishedAt.toISOString(),
@@ -494,11 +442,15 @@ function renderMarkdown(p) {
         `  pro: ${yamlStr(p.proModel)}`,
         `  con: ${yamlStr(p.conModel)}`,
         `judge: ${yamlStr(p.judgeModel)}`,
+        "providers:",
+        `  pro: ${yamlStr(p.proProvider || "ollama")}`,
+        `  con: ${yamlStr(p.conProvider || "ollama")}`,
+        `  judge: ${yamlStr(p.judgeProvider || "ollama")}`,
         `rounds: ${p.rounds}`,
         `winner: ${yamlStr(p.winner)}`,
         `winner_label: ${yamlStr(p.winnerLabel)}`,
         `duration_seconds: ${Math.round((p.durationMs || 0) / 1000)}`,
-        `generator: "Debate Arena (Ollama)"`,
+        `generator: "Debate Arena"`,
         "---",
         "",
     ].join("\n");
@@ -510,7 +462,7 @@ function renderMarkdown(p) {
         "",
         `> ${winnerLine}`,
         ">",
-        `> Pro: \`${p.proModel}\` · Con: \`${p.conModel}\` · Judge: \`${p.judgeModel}\``,
+        `> Pro: \`${modelLabel(p.proProvider, p.proModel)}\` · Con: \`${modelLabel(p.conProvider, p.conModel)}\` · Judge: \`${modelLabel(p.judgeProvider, p.judgeModel)}\``,
         "",
         "## Transcript",
         "",
@@ -532,6 +484,10 @@ function slug(s) {
             .replace(/^-+|-+$/g, "")
             .slice(0, 60) || "debate"
     );
+}
+
+function modelLabel(provider, model) {
+    return modelRuntime.resolveModel(provider ? `${provider}:${model}` : model).label;
 }
 
 function stamp(iso) {
@@ -684,7 +640,8 @@ function start(port, attemptsLeft) {
         log("");
         log("  ⚔  Debate Arena is live");
         log(`     ${url}`);
-        log(`     Ollama:  ${OLLAMA_HOST}`);
+        log(`     Ollama:  ${modelRuntime.ollamaHost}`);
+        log("     Cloud:   Anthropic, Mistral, OpenAI, Microsoft Foundry, Google Gemini (when configured)");
         log(`     Saves:   ${join(SAVE_ROOT, "debates")}`);
         log("");
         log("  Press Ctrl+C to stop.");

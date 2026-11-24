@@ -119,31 +119,66 @@ function hideWinPills() {
 // Model loading
 // ---------------------------------------------------------------------------
 async function loadModels() {
-  setSetupMsg("Reaching Ollama…");
+  setSetupMsg("Discovering models…");
   els.start.disabled = true;
   els.swap.disabled = true;
   try {
-    const models = await copilot.listModels();
-    for (const sel of [els.pro, els.con, els.judge]) sel.innerHTML = "";
-    models.forEach((m) => {
-      [els.pro, els.con, els.judge].forEach((sel) => {
-        const o = document.createElement("option");
-        o.value = m;
-        o.textContent = m;
-        sel.appendChild(o);
-      });
-    });
+    const result = await copilot.listModels();
+    const models = normalizeModels(result);
+    const previous = [els.pro.value, els.con.value, els.judge.value];
+    for (const sel of [els.pro, els.con, els.judge]) populateModelSelect(sel, models);
+    for (const [index, sel] of [els.pro, els.con, els.judge].entries()) {
+      if (previous[index] && models.some((model) => model.ref === previous[index])) {
+        sel.value = previous[index];
+      }
+    }
     // Sensible defaults: distinct debaters when possible.
-    els.pro.selectedIndex = 0;
-    els.con.selectedIndex = Math.min(1, models.length - 1);
-    els.judge.selectedIndex = Math.min(2, models.length - 1);
-    setSetupMsg(`${models.length} model${models.length === 1 ? "" : "s"} ready.`);
+    if (!previous.some((ref) => ref && ref !== "Loading…" && ref !== "—")) {
+      setDefaultModels(models);
+    }
+    const warnings = Array.isArray(result?.warnings) ? result.warnings : [];
+    const providers = new Set(models.map((model) => model.provider)).size;
+    const summary = `${models.length} model${models.length === 1 ? "" : "s"} across ${providers} provider${providers === 1 ? "" : "s"}.`;
+    setSetupMsg(warnings.length ? `${summary} ${warnings.join(" · ")}` : summary, warnings.length > 0);
+    els.setupMsg.title = warnings.join("\n");
     els.start.disabled = false;
     els.swap.disabled = false;
   } catch (e) {
     for (const sel of [els.pro, els.con, els.judge]) sel.innerHTML = "<option>—</option>";
     setSetupMsg(e.message || String(e), true);
   }
+}
+
+function normalizeModels(result) {
+  const models = Array.isArray(result) ? result : result?.models || [];
+  return models.map((model) =>
+    typeof model === "string"
+      ? { ref: `ollama:${model}`, provider: "ollama", providerLabel: "Ollama", model, label: `Ollama / ${model}` }
+      : model
+  );
+}
+
+function populateModelSelect(select, models) {
+  select.innerHTML = "";
+  const groups = new Map();
+  for (const model of models) {
+    if (!groups.has(model.provider)) {
+      const group = document.createElement("optgroup");
+      group.label = model.providerLabel;
+      groups.set(model.provider, group);
+      select.appendChild(group);
+    }
+    const option = document.createElement("option");
+    option.value = model.ref;
+    option.textContent = model.model;
+    groups.get(model.provider).appendChild(option);
+  }
+}
+
+function setDefaultModels(models) {
+  els.pro.selectedIndex = 0;
+  els.con.selectedIndex = Math.min(1, models.length - 1);
+  els.judge.selectedIndex = Math.min(2, models.length - 1);
 }
 
 // ---------------------------------------------------------------------------
